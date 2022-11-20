@@ -17,16 +17,20 @@ JSON={}
 
 #get all responses async
 async def fetch_page(session,url):
-    async with session.get(url) as response:
-        return await response.read() #'ISO-8859-1' 
-        # return BytesIO(res)
+    try:
+        async with session.get(url) as response:
+            return await response.read()
+    except aiohttp.client_exceptions.ClientConnectorError as err:
+        print("Server not responding: resending request...")
+        fetch_page(session,url)
 
 async def fetch_all_pages(session, urls):
     task_list=[]
-    for url in urls:
+    for url in urls:    
         print(f"{url} sent")
         task = asyncio.create_task(fetch_page(session,url) )
         task_list.append(task)
+
         # * packs excess positional arguments into a tuple 
     results = await asyncio.gather(*task_list)
     print(f"results received: {len(results)}")
@@ -56,10 +60,9 @@ def add_data_JSON(name,a):
 
 
 #dummy for getting first div
-def parse_href_li(response):
+def parse_href_li(response,url):
 
     # #get soup to find all links 
-    # response= requests.get(url)
     soup= BeautifulSoup(response,"html.parser")
     elements = soup.select('a')
 
@@ -114,12 +117,13 @@ def parse_li_content(li,url,dir):
         a = li.find_all("a", attrs={"rel": "external"})
         name = list(map(lambda x: x.text.replace('/','-'),a))
         a = list(map(lambda x: urljoin(url,x.get('href')),a))
+        name_a = list(zip(name,a))
         #list comprehension to rm dups
-        a = [a[i] for i in range(len(a)) if i == a.index(a[i]) ]
+        # a = [a[i] for i in range(len(a)) if i == a.index(a[i]) ]
 
         #create dictionary key with child dir
         #add list of pdfs as value pair 
-        TREE[c_dir]=a
+        TREE[c_dir]=name_a
 
     #there is not h3 so no new directory
     #link navigates directly to pdf
@@ -127,14 +131,15 @@ def parse_li_content(li,url,dir):
         a = li.find_all("a", attrs={"rel": "external"})
         name = list(map(lambda x: x.text.replace('/','-'),a))
         a = list(map(lambda x: urljoin(url,x.get('href')),a))
-        a = [a[i] for i in range(len(a)) if i == a.index(a[i]) ]
+        name_a = list(zip(name,a))
+        # a = [a[i] for i in range(len(a)) if i == a.index(a[i]) ]
 
         #check if key exits before overriding 
         #if it does add list to values 
         if(TREE.get(dir) != None):
-            TREE[dir].extend(a)
+            TREE[dir].extend(name_a)
         else:
-            TREE[dir]=a
+            TREE[dir]=name_a
     
     #save PDF data in JSON
     add_data_JSON(name,a)
@@ -165,8 +170,8 @@ def parse_collapsible_content(content,url,dir):
             list_content = parse_li_content(li,url,p_dir)
             li_dir = list(list_content.keys())
             dirs.extend(li_dir)
-            li_url= list(list_content.values())
-            urls.extend(li_url)
+            li_name_url= list(list_content.values())
+            urls.extend(li_name_url)
 
     TREE = dict(zip(dirs,urls))
 
@@ -195,57 +200,85 @@ def crawler(dir,url,href):
 
 
 #write pdfs to directories 
-def writeFile(dir,list_pdfs):
+def fetch_all_pdfs(list_pdfs):
+    start = time.time()
     list_pdf_content = asyncio.run(fetch_all_requests(list_pdfs))
-    pdfs = zip(list_pdfs,list_pdf_content)
-    for pdf,pdf_content in pdfs:
-    # for pdf in list_pdfs:
-        pdf_name =  os.path.basename(os.path.normpath(pdf))
+    end=time.time()
+    print(f"request spent: {round(end-start,2)} s\n")
+    return list_pdf_content
+
+
+def writeFile(dir,name,a):
+    print(f"\n{dir}")
+    for pdf,pdf_content in zip(name,a):
+        pdf_name = pdf
         #try to write to dir as it exists 
         try:
             with open(os.path.join(dir,pdf_name),'wb')as f:
-                # f.write(requests.get(pdf).content)
                 f.write(pdf_content)
         #catch if dir does not exist create dir and write to it
         except FileNotFoundError:
             os.makedirs(dir)
             with open(os.path.join(dir,pdf_name),'wb')as f:
-                # f.write(requests.get(pdf).content)  
                 f.write(pdf_content)
+        print(f"{pdf} saved...")
+    print()
 
+def dumpJSON(dict,dir,name):
+    #write JSON to .json file in parent dir
+    jsonO=json.dumps(dict,indent=4)
+    try:
+        with open(os.path.join(dir,name),'w') as f:
+            f.write(jsonO)
+    except FileNotFoundError as err:
+        os.makedirs(dir)
+        with open(os.path.join(dir,name),'w') as f:
+            f.write(jsonO)
+    print(f"~~succesfully dumped JSON~~")
 
-        
 #main
 if __name__ == '__main__':   
     cwd = os.getcwd()
+    start=time.time()
 
-#test urls for crawler, breaks on url1 and url2, url3 works but takes 30 min
+# Create for loop to iterate trhough list of urls
     url1= "http://manuals.gogenielift.com/Parts%20And%20Service%20Manuals/1MainPMIndex.htm"
-    url2="http://manuals.gogenielift.com/Parts%20And%20Service%20Manuals/1MainSMIndex.htm"
+    url2="http://manuals.gogenielift.com/Parts%20And%20Service%20Manuals/PartsScissorsindex.htm"
     url3="http://manuals.gogenielift.com/Parts%20And%20Service%20Manuals/PartsSBoomsIndex.htm"
+    url4="https://manuals.genielift.com/Parts%20And%20Service%20Manuals/PartsZBoomsindex.htm"
 
     #create seperate directory in project folder to store all directories from crawler
-    parent_directory = cwd+'/'+os.path.basename(os.path.normpath(url3))
+    url=url4
+    url_index = os.path.basename(os.path.normpath(url))
+    parent_directory = cwd+'/'+ url_index
 
     #get first url to setup crawler
-    response= requests.get(url3).text
-    dir_urls =  parse_href_li(response)
+    response= BeautifulSoup(requests.get(url).text,"html.parser")
+    dir_urls =  parse_uncollapsible_content(response,url)
+    # dir_urls = parse_uncollapsible_content(BeautifulSoup(response,"html.parser"),url)
     dirs = list(dir_urls.keys())
     urls= list(dir_urls.values())
     hrefs = asyncio.run(fetch_all_requests(urls))
     
     tree={}
-    for dir,url,href in zip(dirs,urls,hrefs):
+    for dir,uri,href in zip(dirs,urls,hrefs):
         print(f"_________________{cwd}/{dir}_________________")
         dir=parent_directory+"/"+dir
         #crawl through all links 
-        tree = crawler(dir,url,href)
+        tree = crawler(dir,uri,href)
     
+    #dump to file to check json dict
+    dumpJSON(tree,parent_directory,"tree_file.json")
+
     #write pdf to current directory
-    for dir,pdf in tree.items():
-        writeFile(dir,pdf)
+    for dir,pdf_set in tree.items():
+        #unzip tuple into seperate lists
+        name,a=zip(*pdf_set)
+        pdfs = fetch_all_pdfs(a)
+        writeFile(dir,name,pdfs)
 
     #write JSON to .json file in parent dir
-    jsonO=json.dumps(JSON,indent=4)
-    with open(os.path.join(parent_directory,"1MainPMIndex_SBOOM.json"),'w') as f:
-         f.write(jsonO)
+    dumpJSON(JSON,parent_directory,url_index)
+    end=time.time()
+    duration = round((end-start)/60,2)
+    print(f"Completed: {duration}m")
