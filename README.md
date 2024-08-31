@@ -1,2 +1,2 @@
 # WebScraper
-Scrape Pdfs from specified urls
+A shit attempt at making a custom web scraper in python. Keeping in repo for reference
